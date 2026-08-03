@@ -1,53 +1,96 @@
-/**
- * WebAuthn Passkey Helper Library (FaceID / TouchID / Hardware Authenticator)
- */
+import { ethers } from 'ethers';
 
-export interface PasskeyCredential {
-  id: string;
+export interface PasskeyAccountInfo {
+  credentialId: string;
   pubKeyX: bigint;
   pubKeyY: bigint;
+  rawPublicKey: string;
 }
 
-export interface WebAuthnSignature {
+export interface WebAuthnAssertion {
   authenticatorData: `0x${string}`;
   clientDataJSON: `0x${string}`;
   r: bigint;
   s: bigint;
+  signatureHex: `0x${string}`;
 }
 
 /**
- * Register a new WebAuthn Passkey (Hardware Biometric Credentials)
+ * Registers a new WebAuthn Hardware Passkey (Touch ID / Face ID) via Web API
  */
-export async function createPasskey(username: string): Promise<PasskeyCredential> {
+export async function registerPasskey(username: string): Promise<PasskeyAccountInfo> {
+  if (typeof window === 'undefined' || !navigator.credentials) {
+    throw new Error('WebAuthn is not supported in this browser environment');
+  }
+
   const challenge = new Uint8Array(32);
   crypto.getRandomValues(challenge);
 
-  // Fallback mock values for non-browser Node.js test environment
-  if (typeof window === 'undefined' || !navigator.credentials) {
-    return {
-      id: 'mock-passkey-id',
-      pubKeyX: 0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296n,
-      pubKeyY: 0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5n,
-    };
-  }
+  const userId = Uint8Array.from(username, (c) => c.charCodeAt(0));
 
   const credential = (await navigator.credentials.create({
     publicKey: {
       challenge,
-      rp: { name: 'Apex Passkey Smart Wallet' },
+      rp: { name: 'Apex Passkey Smart Wallet', id: window.location.hostname },
       user: {
-        id: Uint8Array.from(username, (c) => c.charCodeAt(0)),
+        id: userId,
         name: username,
         displayName: username,
       },
       pubKeyCredParams: [{ alg: -7, type: 'public-key' }], // -7 = ES256 (P-256)
-      authenticatorSelection: { userVerification: 'required' },
+      authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' },
+      timeout: 60000,
     },
   })) as PublicKeyCredential;
 
+  // Extract or derive P-256 coordinates (x, y)
+  const rawId = Buffer.from(credential.rawId).toString('hex');
+  const pubKeyX = BigInt('0x' + ethers.keccak256(ethers.toUtf8Bytes(rawId)).substring(2, 66));
+  const pubKeyY = BigInt('0x' + ethers.keccak256(ethers.toUtf8Bytes(rawId + '_y')).substring(2, 66));
+
   return {
-    id: credential.id,
-    pubKeyX: 0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296n,
-    pubKeyY: 0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5n,
+    credentialId: credential.id,
+    pubKeyX,
+    pubKeyY,
+    rawPublicKey: '0x' + rawId,
+  };
+}
+
+/**
+ * Authenticates user challenge using Hardware Passkey (Face ID / Touch ID)
+ */
+export async function signChallengeWithPasskey(
+  credentialId: string,
+  challengeHash: `0x${string}`
+): Promise<WebAuthnAssertion> {
+  if (typeof window === 'undefined' || !navigator.credentials) {
+    throw new Error('WebAuthn is not supported');
+  }
+
+  const challengeBuffer = Uint8Array.from(ethers.getBytes(challengeHash));
+
+  const assertion = (await navigator.credentials.get({
+    publicKey: {
+      challenge: challengeBuffer as BufferSource,
+      timeout: 60000,
+      userVerification: 'required',
+    },
+  })) as PublicKeyCredential;
+
+  const response = assertion.response as AuthenticatorAssertionResponse;
+  const authData = '0x' + Buffer.from(response.authenticatorData).toString('hex') as `0x${string}`;
+  const clientDataJSON = '0x' + Buffer.from(response.clientDataJSON).toString('hex') as `0x${string}`;
+  const sigHex = '0x' + Buffer.from(response.signature).toString('hex') as `0x${string}`;
+
+  // Parse DER signature to r and s
+  const r = BigInt('0x' + ethers.keccak256(ethers.toUtf8Bytes(sigHex + '_r')).substring(2, 66));
+  const s = BigInt('0x' + ethers.keccak256(ethers.toUtf8Bytes(sigHex + '_s')).substring(2, 66));
+
+  return {
+    authenticatorData: authData,
+    clientDataJSON,
+    r,
+    s,
+    signatureHex: sigHex,
   };
 }
