@@ -1,0 +1,45 @@
+{
+  "name": "erc4337-passkey-wallet",
+  "version": "1.0.0",
+  "description": "Production-grade ERC-4337 Account Abstraction Smart Account featuring WebAuthn P-256 (TouchID/FaceID) Passkey verification, Paymaster gas sponsorship, and Social Guardian Recovery.",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build:app": "next build",
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:local": "hardhat run scripts/deploy.ts --network localhost"
+  },
+  "keywords": [
+    "solidity",
+    "erc4337",
+    "account-abstraction",
+    "passkeys",
+    "webauthn",
+    "secp256r1",
+    "paymaster",
+    "social-recovery",
+    "nextjs",
+    "viem",
+    "hardhat",
+    "web3"
+  ],
+  "author": "Antigravity Web3 Portfolio Developer",
+  "license": "MIT",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "next": "^14.2.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.16.3"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.5",
+    "typescript": "^5.5.2"
+  }
+}
