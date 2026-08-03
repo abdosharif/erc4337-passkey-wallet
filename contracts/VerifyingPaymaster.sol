@@ -40,6 +40,7 @@ contract VerifyingPaymaster is IPaymaster, Ownable {
         // Extract validUntil, validAfter, and paymaster signature from paymasterAndData
         uint48 validUntil = uint48(bytes6(userOp.paymasterAndData[20:26]));
         uint48 validAfter = uint48(bytes6(userOp.paymasterAndData[26:32]));
+        require(block.timestamp >= validAfter && (validUntil == 0 || block.timestamp <= validUntil), "Paymaster: EXPIRED_SIGNATURE");
         bytes calldata signature = userOp.paymasterAndData[32:97];
 
         bytes32 hash = keccak256(

@@ -206,4 +206,12 @@ contract SmartAccount is IAccount, ReentrancyGuard {
 
         emit KeyRecovered(activeRecovery.newPubX, activeRecovery.newPubY, activeRecovery.newOwner);
     }
+
+    /**
+     * @notice Allows SmartAccount owner to void an unauthorized recovery proposal during timelock.
+     */
+    function cancelKeyRecovery() external onlyEntryPointOrSelf {
+        require(activeRecovery.proposedAt > 0 && !activeRecovery.executed, "SmartAccount: NO_ACTIVE_PROPOSAL");
+        delete activeRecovery;
+    }
 }
