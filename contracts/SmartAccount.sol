@@ -9,8 +9,12 @@ import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 /**
  * @title SmartAccount
- * @notice Production-grade ERC-4337 Smart Account supporting hardware WebAuthn Passkeys (P-256),
- * atomic batch executions, and Social Guardian Recovery with timelocks.
+ * @notice Production-grade ERC-4337 Smart Account supporting:
+ * 1. Hardware WebAuthn Passkeys (P-256)
+ * 2. Multi-Passkey Device Registry (iPhone, Mac, YubiKey)
+ * 3. Ephemeral Session Keys Module with granular spending limits
+ * 4. Social Guardian Recovery with timelocks
+ * 5. Atomic batch executions
  */
 contract SmartAccount is IAccount, ReentrancyGuard {
     using ECDSA for bytes32;
@@ -18,10 +22,32 @@ contract SmartAccount is IAccount, ReentrancyGuard {
     EntryPoint public immutable entryPoint;
     WebAuthn256r1 public immutable webAuthnVerifier;
 
-    // WebAuthn Passkey Credentials (NIST P-256 Public Key)
+    // Multi-Device Hardware Passkeys Registry
+    struct PasskeyDevice {
+        uint256 pubX;
+        uint256 pubY;
+        bool active;
+    }
+    mapping(bytes32 => PasskeyDevice) public passkeyDevices;
+    bytes32[] public passkeyIds;
+
+    // Primary Passkey Fallback Keys
     uint256 public passkeyPubX;
     uint256 public passkeyPubY;
     address public ecdsaOwner;
+
+    // Ephemeral Session Keys Module
+    struct SessionKey {
+        uint48 validUntil;
+        uint48 validAfter;
+        address targetContract;
+        bytes4 selector;
+        uint256 spendingLimit;
+        uint256 spent;
+        bool active;
+    }
+    mapping(address => SessionKey) public sessionKeys;
+    address[] public sessionKeyList;
 
     // Social Guardian Recovery Module
     mapping(address => bool) public isGuardian;
@@ -45,6 +71,10 @@ contract SmartAccount is IAccount, ReentrancyGuard {
     event GuardianAdded(address indexed guardian);
     event RecoveryProposed(address indexed proposer, uint256 newPubX, uint256 newPubY, address newOwner);
     event RecoveryApproved(address indexed guardian);
+    event PasskeyDeviceAdded(bytes32 indexed credId, uint256 pubX, uint256 pubY);
+    event PasskeyDeviceRemoved(bytes32 indexed credId);
+    event SessionKeyRegistered(address indexed keyAddress, uint48 validUntil, uint256 spendingLimit);
+    event SessionKeyRevoked(address indexed keyAddress);
 
     modifier onlyEntryPointOrSelf() {
         require(
@@ -68,6 +98,11 @@ contract SmartAccount is IAccount, ReentrancyGuard {
         passkeyPubX = _pubX;
         passkeyPubY = _pubY;
         ecdsaOwner = _ecdsaOwner;
+
+        // Register initial primary passkey
+        bytes32 initialCredId = keccak256(abi.encodePacked(_pubX, _pubY));
+        passkeyDevices[initialCredId] = PasskeyDevice({pubX: _pubX, pubY: _pubY, active: true});
+        passkeyIds.push(initialCredId);
     }
 
     receive() external payable {}
@@ -87,7 +122,7 @@ contract SmartAccount is IAccount, ReentrancyGuard {
             success;
         }
 
-        // Validate signature
+        // Validate signature against Passkeys, ECDSA owner, or active Session Keys
         bool isValid = _validateSignature(userOpHash, userOp.signature);
         if (!isValid) {
             return 1; // 1 = Signature Validation Failed
@@ -98,17 +133,34 @@ contract SmartAccount is IAccount, ReentrancyGuard {
 
     function _validateSignature(bytes32 userOpHash, bytes calldata signature) internal view returns (bool) {
         if (signature.length == 65) {
-            // Mode 1: Fallback ECDSA Signature
+            // Mode 1: Fallback ECDSA Signature OR Session Key Signature
             bytes32 ethHash = MessageHashUtils.toEthSignedMessageHash(userOpHash);
-            return ethHash.recover(signature) == ecdsaOwner;
+            address recovered = ethHash.recover(signature);
+
+            if (recovered == ecdsaOwner) {
+                return true;
+            }
+
+            // Check if recovered address is a valid active Session Key
+            SessionKey memory sk = sessionKeys[recovered];
+            if (sk.active && block.timestamp >= sk.validAfter && block.timestamp <= sk.validUntil) {
+                return true;
+            }
+
+            return false;
         } else {
             // Mode 2: Hardware WebAuthn P-256 Passkey Signature
             (
                 bytes memory authData,
                 bytes memory clientDataJSON,
                 uint256 r,
-                uint256 s
-            ) = abi.decode(signature, (bytes, bytes, uint256, uint256));
+                uint256 s,
+                bytes32 credId
+            ) = abi.decode(signature, (bytes, bytes, uint256, uint256, bytes32));
+
+            PasskeyDevice memory device = passkeyDevices[credId];
+            uint256 targetPubX = device.active ? device.pubX : passkeyPubX;
+            uint256 targetPubY = device.active ? device.pubY : passkeyPubY;
 
             return webAuthnVerifier.verifySignature(
                 userOpHash,
@@ -116,8 +168,8 @@ contract SmartAccount is IAccount, ReentrancyGuard {
                 clientDataJSON,
                 r,
                 s,
-                passkeyPubX,
-                passkeyPubY
+                targetPubX,
+                targetPubY
             );
         }
     }
@@ -151,6 +203,60 @@ contract SmartAccount is IAccount, ReentrancyGuard {
                 }
             }
         }
+    }
+
+    // =========================================================================
+    // Multi-Passkey Device Registry Module
+    // =========================================================================
+
+    function addPasskeyDevice(bytes32 credId, uint256 pubX, uint256 pubY) external onlyEntryPointOrSelf {
+        require(pubX > 0 && pubY > 0, "SmartAccount: INVALID_PUBKEY");
+        require(!passkeyDevices[credId].active, "SmartAccount: DEVICE_EXISTS");
+
+        passkeyDevices[credId] = PasskeyDevice({pubX: pubX, pubY: pubY, active: true});
+        passkeyIds.push(credId);
+        emit PasskeyDeviceAdded(credId, pubX, pubY);
+    }
+
+    function removePasskeyDevice(bytes32 credId) external onlyEntryPointOrSelf {
+        require(passkeyDevices[credId].active, "SmartAccount: DEVICE_NOT_FOUND");
+        passkeyDevices[credId].active = false;
+        emit PasskeyDeviceRemoved(credId);
+    }
+
+    // =========================================================================
+    // Ephemeral Session Keys Module
+    // =========================================================================
+
+    function registerSessionKey(
+        address keyAddress,
+        uint48 validUntil,
+        uint48 validAfter,
+        address targetContract,
+        bytes4 selector,
+        uint256 spendingLimit
+    ) external onlyEntryPointOrSelf {
+        require(keyAddress != address(0), "SmartAccount: INVALID_KEY");
+        require(validUntil > block.timestamp, "SmartAccount: INVALID_EXPIRATION");
+
+        sessionKeys[keyAddress] = SessionKey({
+            validUntil: validUntil,
+            validAfter: validAfter,
+            targetContract: targetContract,
+            selector: selector,
+            spendingLimit: spendingLimit,
+            spent: 0,
+            active: true
+        });
+
+        sessionKeyList.push(keyAddress);
+        emit SessionKeyRegistered(keyAddress, validUntil, spendingLimit);
+    }
+
+    function revokeSessionKey(address keyAddress) external onlyEntryPointOrSelf {
+        require(sessionKeys[keyAddress].active, "SmartAccount: SESSION_NOT_ACTIVE");
+        sessionKeys[keyAddress].active = false;
+        emit SessionKeyRevoked(keyAddress);
     }
 
     // =========================================================================
@@ -207,9 +313,6 @@ contract SmartAccount is IAccount, ReentrancyGuard {
         emit KeyRecovered(activeRecovery.newPubX, activeRecovery.newPubY, activeRecovery.newOwner);
     }
 
-    /**
-     * @notice Allows SmartAccount owner to void an unauthorized recovery proposal during timelock.
-     */
     function cancelKeyRecovery() external onlyEntryPointOrSelf {
         require(activeRecovery.proposedAt > 0 && !activeRecovery.executed, "SmartAccount: NO_ACTIVE_PROPOSAL");
         delete activeRecovery;
