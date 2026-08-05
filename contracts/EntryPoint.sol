@@ -103,7 +103,7 @@ contract EntryPoint is ReentrancyGuard {
         }
     }
 
-    function _executeUserOp(UserOperation calldata op, address payable beneficiary) internal {
+    function _executeUserOp(UserOperation calldata op, address payable) internal {
         bytes32 opHash = getUserOpHash(op);
 
         // 1. Counterfactual Account Deployment via initCode if needed

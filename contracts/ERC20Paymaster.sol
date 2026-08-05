@@ -30,7 +30,7 @@ contract ERC20Paymaster is IPaymaster, Ownable {
 
     function validatePaymasterUserOp(
         UserOperation calldata userOp,
-        bytes32 userOpHash,
+        bytes32,
         uint256 maxCost
     ) external override returns (bytes memory context, uint256 validationData) {
         require(msg.sender == address(entryPoint), "ERC20Paymaster: ONLY_ENTRY_POINT");
@@ -48,9 +48,9 @@ contract ERC20Paymaster is IPaymaster, Ownable {
     }
 
     function postOp(
-        uint8 mode,
-        bytes calldata context,
-        uint256 actualGasCost
+        uint8,
+        bytes calldata,
+        uint256
     ) external override {
         require(msg.sender == address(entryPoint), "ERC20Paymaster: ONLY_ENTRY_POINT");
     }

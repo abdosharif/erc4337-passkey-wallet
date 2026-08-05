@@ -10,7 +10,7 @@ contract WebAuthn256r1 {
      * @notice Verifies WebAuthn assertion signature (P-256) against challenge digest.
      */
     function verifySignature(
-        bytes32 challengeHash,
+        bytes32,
         bytes memory authenticatorData,
         bytes memory clientDataJSON,
         uint256 r,
